@@ -1,0 +1,253 @@
+// ============================================
+// مصرف الوكلاء - Bank of Agents
+// Prisma Database Schema
+// ============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// المستخدمين (Users)
+// ============================================
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  avatar       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  wallet  Wallet?
+  agents  Agent[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+// ============================================
+// المحفظة الرئيسية (Main Wallet)
+// ============================================
+
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  balance   Decimal  @default(0) @db.Decimal(12, 2)
+  currency  String   @default("USD")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+// ============================================
+// الوكلاء (Agents)
+// ============================================
+
+enum AgentStatus {
+  active
+  paused
+  suspended
+}
+
+enum AgentProvider {
+  openai
+  anthropic
+  google
+  custom
+}
+
+model Agent {
+  id          String        @id @default(uuid())
+  userId      String        @map("user_id")
+  name        String
+  description String?
+  type        String
+  provider    AgentProvider @default(openai)
+  status      AgentStatus   @default(active)
+  trustScore  Int           @default(50) @map("trust_score")
+  apiKey      String?       @map("api_key")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  lastActiveAt DateTime?    @map("last_active_at")
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet       AgentWallet?
+  constraints  AgentConstraints?
+  transactions Transaction[]
+  auditLogs    AuditLog[]
+  approvalRequests ApprovalRequest[]
+
+  @@map("agents")
+}
+
+// ============================================
+// محفظة الوكيل (Agent Wallet)
+// ============================================
+
+model AgentWallet {
+  id         String   @id @default(uuid())
+  agentId    String   @unique @map("agent_id")
+  balance    Decimal  @default(0) @db.Decimal(12, 2)
+  dailyLimit Decimal  @default(50) @map("daily_limit") @db.Decimal(12, 2)
+  spentToday Decimal  @default(0) @map("spent_today") @db.Decimal(12, 2)
+  currency   String   @default("USD")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  agent        Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  transactionsFrom Transaction[] @relation("FromWallet")
+  transactionsTo   Transaction[] @relation("ToWallet")
+
+  @@map("agent_wallets")
+}
+
+// ============================================
+// قيود الوكيل (Agent Constraints)
+// ============================================
+
+model AgentConstraints {
+  id                 String   @id @default(uuid())
+  agentId            String   @unique @map("agent_id")
+  perTransactionLimit Decimal @default(10) @map("per_transaction_limit") @db.Decimal(12, 2)
+  allowedRecipients  String[] @map("allowed_recipients")
+  requiresApproval   Boolean  @default(false) @map("requires_approval")
+  approvalThreshold  Decimal  @default(25) @map("approval_threshold") @db.Decimal(12, 2)
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("agent_constraints")
+}
+
+// ============================================
+// المعاملات (Transactions)
+// ============================================
+
+enum TransactionType {
+  deposit
+  withdrawal
+  transfer
+  api_payment
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  cancelled
+  pending_approval
+}
+
+model Transaction {
+  id           String            @id @default(uuid())
+  fromWalletId String?           @map("from_wallet_id")
+  toWalletId   String?           @map("to_wallet_id")
+  agentId      String?           @map("agent_id")
+  amount       Decimal           @db.Decimal(12, 2)
+  type         TransactionType
+  status       TransactionStatus @default(pending)
+  reason       String?
+  metadata     Json?
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  fromWallet AgentWallet? @relation("FromWallet", fields: [fromWalletId], references: [id])
+  toWallet   AgentWallet? @relation("ToWallet", fields: [toWalletId], references: [id])
+  agent      Agent?       @relation(fields: [agentId], references: [id])
+  auditLog   AuditLog?
+
+  @@map("transactions")
+}
+
+// ============================================
+// سجل التدقيق (Audit Log)
+// ============================================
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  agentId        String   @map("agent_id")
+  transactionId  String?  @unique @map("transaction_id")
+  action         String
+  context        Json?
+  decisionReason String   @map("decision_reason")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // Relations
+  agent       Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@map("audit_logs")
+}
+
+// ============================================
+// طلبات الموافقة (Approval Requests)
+// ============================================
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum ApprovalUrgency {
+  low
+  normal
+  high
+}
+
+model ApprovalRequest {
+  id        String          @id @default(uuid())
+  agentId   String          @map("agent_id")
+  amount    Decimal         @db.Decimal(12, 2)
+  reason    String
+  urgency   ApprovalUrgency @default(normal)
+  status    ApprovalStatus  @default(pending)
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("approval_requests")
+}
+
+// ============================================
+// الإشعارات (Notifications)
+// ============================================
+
+enum NotificationType {
+  info
+  success
+  warning
+  error
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  title     String
+  message   String
+  type      NotificationType @default(info)
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
+  metadata  Json?
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
